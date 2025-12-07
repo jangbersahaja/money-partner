@@ -1,11 +1,13 @@
 import { createClient } from "@/lib/supabase/server";
-import { addDays } from "date-fns";
+import { addMonths, differenceInDays, getDate, setDate, startOfDay } from "date-fns";
 
 export interface SafeToSpendData {
   liquidCash: number;
   upcomingBills: number;
   sinkingFunds: number;
   safeToSpend: number;
+  dailySafeToSpend: number;
+  daysRemaining: number;
 }
 
 export interface RecentTransaction {
@@ -29,7 +31,7 @@ export async function getHomeData() {
   // 1. Get Household Info (ID and Member IDs)
   const { data: myProfile } = await supabase
     .from("profiles")
-    .select("household_id")
+    .select("household_id, pay_day")
     .eq("id", user.id)
     .single();
 
@@ -57,15 +59,25 @@ export async function getHomeData() {
   const liquidCash =
     liquidAccounts?.reduce((sum, acc) => sum + acc.balance, 0) ?? 0;
 
-  // 3. Calculate Upcoming Bills (Household Wide)
-  const thirtyDaysFromNow = addDays(new Date(), 30).toISOString();
+  // 3. Calculate Upcoming Bills (Based on Pay Cycle)
+  const today = startOfDay(new Date());
+  const currentDay = getDate(today);
+  const payDay = myProfile?.pay_day ?? 25; // Default from schema
 
+  let nextPayDate = setDate(today, payDay);
+  if (currentDay >= payDay) {
+    nextPayDate = addMonths(nextPayDate, 1);
+  }
+  
+  const daysRemaining = Math.max(1, differenceInDays(nextPayDate, today));
+
+  // Bills due BEFORE next pay date
   const { data: upcomingRules } = await supabase
     .from("recurring_rules")
     .select("amount")
-    .in("owner_id", memberIds) // Check ALL household bills
+    .in("owner_id", memberIds)
     .eq("is_active", true)
-    .lte("next_due_date", thirtyDaysFromNow);
+    .lt("next_due_date", nextPayDate.toISOString()); // Strictly less than pay date
 
   const upcomingBills =
     upcomingRules?.reduce((sum, rule) => sum + rule.amount, 0) ?? 0;
@@ -81,6 +93,7 @@ export async function getHomeData() {
 
   // 5. Safe to Spend
   const safeToSpend = liquidCash - upcomingBills - sinkingFunds;
+  const dailySafeToSpend = safeToSpend / daysRemaining;
 
   // 6. Fetch Recent Transactions (top 5)
   const { data: transactions } = await supabase
@@ -112,7 +125,14 @@ export async function getHomeData() {
     })) ?? [];
 
   return {
-    safeToSpendData: { liquidCash, upcomingBills, sinkingFunds, safeToSpend },
+    safeToSpendData: { 
+      liquidCash, 
+      upcomingBills, 
+      sinkingFunds, 
+      safeToSpend, 
+      dailySafeToSpend, 
+      daysRemaining 
+    },
     recentTransactions,
   };
 }

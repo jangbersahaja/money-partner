@@ -10,6 +10,16 @@ export interface AddTransactionInput {
   description?: string;
   type: "income" | "expense" | "transfer";
   targetAccountId?: string; // Required for transfers
+  date?: string; // Optional override date
+}
+
+export interface UpdateTransactionInput {
+  id: string;
+  amount: number;
+  category: string;
+  description?: string;
+  date: string;
+  type: "income" | "expense" | "transfer";
 }
 
 export async function addTransaction(input: AddTransactionInput) {
@@ -124,7 +134,7 @@ export async function addTransaction(input: AddTransactionInput) {
     category: input.category,
     description: input.description || null,
     type: input.type,
-    date: new Date().toISOString(),
+    date: input.date || new Date().toISOString(),
   });
 
   if (txError) return { error: "Failed to create transaction" };
@@ -218,5 +228,131 @@ export async function getTransferAccounts() {
     .in("owner_id", ownerIds)
     .order("name");
 
+
   return accounts ?? [];
+}
+
+export async function updateTransaction(input: UpdateTransactionInput) {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return { error: "User not authenticated" };
+
+  // 1. Fetch original transaction to revert balance
+  const { data: originalTx } = await supabase
+    .from("transactions")
+    .select("*")
+    .eq("id", input.id)
+    .single();
+
+  if (!originalTx) {
+    return { error: "Transaction not found" };
+  }
+
+  // Prevent editing transfers for now (too complex to sync two txs + balances)
+  if (originalTx.type === "transfer" || input.type === "transfer") {
+    return { error: "Editing transfers is not supported yet. Please delete and recreate." };
+  }
+
+  // Revert Balance (Undo original)
+  // Fetch account first
+  const { data: account } = await supabase
+    .from("accounts")
+    .select("balance")
+    .eq("id", originalTx.account_id)
+    .single();
+  
+  if (!account) return { error: "Account not found" };
+
+  // Calculate Reverted Balance
+  // If Expense (-100): was subtracted. To Revert: +100 (subtract negative)
+  // If Income (+100): was added. To Revert: -100 (subtract positive)
+  // So: oldBalance - originalTx.amount
+  const revertedBalance = account.balance - originalTx.amount;
+
+  // 3. Apply New Transaction Effect
+  const newAmountSigned = input.type === "expense" ? -input.amount : input.amount;
+  const finalBalance = revertedBalance + newAmountSigned;
+
+  // 4. Update Account
+  const { error: accUpdateError } = await supabase
+    .from("accounts")
+    .update({ balance: finalBalance })
+    .eq("id", originalTx.account_id);
+
+  if (accUpdateError) return { error: "Failed to update account balance" };
+
+  // 5. Update Transaction
+  const { error: txUpdateError } = await supabase
+    .from("transactions")
+    .update({
+      amount: newAmountSigned,
+      category: input.category,
+      description: input.description,
+      date: input.date,
+      type: input.type,
+    })
+    .eq("id", input.id);
+
+  if (txUpdateError) return { error: "Failed to update transaction" };
+
+  revalidatePath("/");
+  revalidatePath("/accounts");
+  return { success: true };
+}
+
+export async function deleteTransaction(transactionId: string) {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "User not authenticated" };
+
+  // 1. Fetch tx
+  const { data: tx } = await supabase
+    .from("transactions")
+    .select("*")
+    .eq("id", transactionId)
+    .single();
+
+  if (!tx) return { error: "Transaction not found" };
+
+  // 2. Revert Balance
+  // If transfer, we need to handle linked transaction...
+  if (tx.type === "transfer") {
+     // TODO: Handle transfer deletion (find linked tx, revert both balances)
+     // For now, simple deletion might leave data inconsistent.
+     // Let's block it or try to find linked.
+     // Schema has `linked_transaction_id`.
+     if (tx.linked_transaction_id) {
+       // Delete linked one too?
+       // Let's just fail for now to be safe.
+       return { error: "Deleting transfers not fully supported yet." };
+     }
+  }
+
+  // Revert single tx balance
+  const { data: account } = await supabase
+    .from("accounts")
+    .select("balance")
+    .eq("id", tx.account_id)
+    .single();
+
+  if (account) {
+    const newBalance = account.balance - tx.amount;
+    await supabase.from("accounts").update({ balance: newBalance }).eq("id", tx.account_id);
+  }
+
+  // 3. Delete Tx
+  const { error } = await supabase.from("transactions").delete().eq("id", transactionId);
+
+  if (error) return { error: "Failed to delete transaction" };
+
+  revalidatePath("/");
+  revalidatePath("/accounts");
+  return { success: true };
 }

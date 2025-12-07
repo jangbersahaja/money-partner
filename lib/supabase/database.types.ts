@@ -174,6 +174,7 @@ export type Database = {
           created_at: string
           household_id: string | null
           id: string
+          pay_day: number | null
           updated_at: string
           username: string
         }
@@ -198,10 +199,10 @@ export type Database = {
       recurring_rules: {
         Row: {
           amount: number
-          category_id: string | null
+          category: string | null
           created_at: string
           due_day: number | null
-          frequency: Database["public"]["Enums"]["frequency_type"]
+          frequency: string // Changed from enum to string to match flexible migration or keep it compatible
           id: string
           is_active: boolean | null
           name: string
@@ -211,10 +212,10 @@ export type Database = {
         }
         Insert: {
           amount: number
-          category_id?: string | null
+          category?: string | null
           created_at?: string
           due_day?: number | null
-          frequency?: Database["public"]["Enums"]["frequency_type"]
+          frequency?: string
           id?: string
           is_active?: boolean | null
           name: string
@@ -224,10 +225,10 @@ export type Database = {
         }
         Update: {
           amount?: number
-          category_id?: string | null
+          category?: string | null
           created_at?: string
           due_day?: number | null
-          frequency?: Database["public"]["Enums"]["frequency_type"]
+          frequency?: string
           id?: string
           is_active?: boolean | null
           name?: string
@@ -236,13 +237,6 @@ export type Database = {
           updated_at?: string
         }
         Relationships: [
-          {
-            foreignKeyName: "recurring_rules_category_id_fkey"
-            columns: ["category_id"]
-            isOneToOne: false
-            referencedRelation: "categories"
-            referencedColumns: ["id"]
-          },
           {
             foreignKeyName: "recurring_rules_owner_id_fkey"
             columns: ["owner_id"]

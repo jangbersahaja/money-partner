@@ -117,6 +117,15 @@ export interface CreateAccountInput {
   dueDay?: number;
 }
 
+export interface UpdateAccountInput {
+  id: string;
+  name: string;
+  type: Database["public"]["Enums"]["account_type"];
+  balance: number; // Important: This sets balance directly (reconciliation)
+  isLiquid: boolean;
+  isShared: boolean;
+}
+
 export async function createAccount(input: CreateAccountInput) {
   const supabase = await createClient();
 
@@ -168,4 +177,49 @@ export async function createAccount(input: CreateAccountInput) {
   revalidatePath("/");
 
   return { success: true, account };
+}
+
+export async function updateAccount(input: UpdateAccountInput) {
+  const supabase = await createClient();
+
+  // Determine if balance changed
+  const { data: oldAccount } = await supabase.from("accounts").select("balance").eq("id", input.id).single();
+  const oldBalance = oldAccount?.balance ?? 0;
+  
+  // If balance changed, we might want to record a "Reconciliation" transaction automatically?
+  // User asked for "Edit Data", assuming direct edit.
+  // We'll update directly.
+  
+  const { error } = await supabase
+    .from("accounts")
+    .update({
+      name: input.name,
+      type: input.type,
+      balance: input.balance,
+      is_liquid: input.isLiquid,
+      is_shared: input.isShared,
+    })
+    .eq("id", input.id);
+
+  if (error) return { error: "Failed to update account" };
+  
+  // Create a reconciliation transaction if significant diff?
+  // Optional enhancement. For now, trust the user edit.
+
+  revalidatePath("/accounts");
+  revalidatePath("/");
+  return { success: true };
+}
+
+export async function deleteAccount(accountId: string) {
+  const supabase = await createClient();
+  
+  // Cascade delete is handled by DB for child tables (transactions)
+  const { error } = await supabase.from("accounts").delete().eq("id", accountId);
+
+  if (error) return { error: "Failed to delete account" };
+
+  revalidatePath("/accounts");
+  revalidatePath("/");
+  return { success: true };
 }
